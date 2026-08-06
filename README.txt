@@ -1,8 +1,9 @@
 Tool for opening Disk Cryptor (DiskCryptor) 1.1.846.118 partitions or
 disks in Linux. Only supports plain password approach.
 
-NOTE: This is full AI slop. Mainly tested with encrypted partitions, not
-fully encrypted disks. Proceed with caution.
+NOTE: main.c is full AI slop. Other components may have been edited by
+AI. Mainly tested with encrypted partitions, not fully encrypted disks.
+Proceed with caution.
 
 CERTIFIED: ⭐ Works on my machine :)
 
