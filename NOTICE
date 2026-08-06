@@ -1,0 +1,35 @@
+This project is licensed under the GNU General Public License version 3
+(see LICENSE), as it links code from the DiskCryptor project, which is
+GPLv3-licensed. The GPLv3 header comments in the affected source files are
+preserved unmodified from the original DiskCryptor source.
+
+Provenance of src/ files:
+
+  main.c, xts.c, xts.h, crc32.c, crc32.h, msvc_compat.h, build.sh
+      Original to this project.
+
+  aes_small.c, aes_small.h
+  twofish_small.c, twofish_small.h
+  serpent_small.c, serpent_small.h
+  sha512_pkcs5_2_small.c, sha512_pkcs5_2_small.h
+      From DiskCryptor (https://github.com/DiskCryptor/DiskCryptor),
+      crypto/crypto_small/, version 1.1.846.118.
+      Copyright ntldr <ntldr@diskcryptor.net> and contributors.
+      Licensed under GPLv3.
+
+  sha512_small.c, sha512_small.h
+      From DiskCryptor's crypto/crypto_small/, version 1.1.846.118, which
+      in turn is adapted from LibTomCrypt by Tom St Denis
+      (http://libtomcrypt.com), released into the public domain, with
+      modifications by ntldr for DiskCryptor. The original file header is
+      preserved unmodified.
+
+All files listed above were adapted for portable POSIX/gcc compilation:
+MSVC-specific intrinsics (_rotl, _rotr, _rotr64, _byteswap_ulong,
+_byteswap_uint64, __movsb, __stosb) were shimmed in msvc_compat.h, and
+Windows-specific integer typedefs (unsigned long -> uint32_t,
+unsigned __int64 -> uint64_t) were retyped for correct behavior on 64-bit
+platforms, where the Windows types would otherwise not be 32-bit. No
+cryptographic logic was altered; behavior was validated against the
+official test vectors for each algorithm (AES, Twofish, Serpent, SHA-512,
+PBKDF2) bundled in DiskCryptor's own crypto/tests/ directory.
