@@ -359,6 +359,111 @@ static void probe_boot_sector(const char *device, const unsigned char *data_key,
 	}
 }
 
+static int rw_relocated_chunk(const char *device, const unsigned char *data_key,
+	long old_reloc_sectors, long new_reloc_sectors, long head_len_sectors)
+{
+	size_t len = (size_t)head_len_sectors * 512;
+	unsigned char *ct = malloc(len);
+	unsigned char *pt = malloc(len);
+	unsigned char *new_ct = malloc(len);
+	FILE *f;
+	int ret = -1;
+
+	f = fopen(device, "r+b");
+	if (f == NULL) {
+		perror("fopen");
+		goto out;
+	}
+	if (fseeko(f, (off_t)old_reloc_sectors * 512, SEEK_SET) != 0 ||
+		fread(ct, 1, len, f) != len) {
+		fprintf(stderr, "could not read relocated chunk at old location\n");
+		fclose(f);
+		goto out;
+	}
+	xts_pass(&CIPHER_AES, data_key, data_key + 32, ct, len,
+		(uint64_t)old_reloc_sectors + 1, 1, pt);
+	xts_pass(&CIPHER_AES, data_key, data_key + 32, pt, len,
+		(uint64_t)new_reloc_sectors + 1, 0, new_ct);
+	if (fseeko(f, (off_t)new_reloc_sectors * 512, SEEK_SET) != 0 ||
+		fwrite(new_ct, 1, len, f) != len) {
+		fprintf(stderr, "could not write relocated chunk at new location\n");
+		fclose(f);
+		goto out;
+	}
+	fclose(f);
+	ret = 0;
+out:
+	free(ct);
+	free(pt);
+	free(new_ct);
+	return ret;
+}
+
+static void do_resize(const char *device, const header_info_t *info,
+	long old_size_sectors, long new_size_sectors, long head_len_sectors)
+{
+	uint64_t live_size;
+	long live_sectors;
+	long old_reloc, new_reloc;
+
+	if (info->alg_1 != CF_AES) {
+		fprintf(stderr, "non-AES/cascade volumes are not supported by resize\n");
+		return;
+	}
+	if (info->flags & VF_NO_REDIR) {
+		printf("volume has no relocation area, nothing to do; "
+			"resize the partition and filesystem directly\n");
+		return;
+	}
+	if (info->flags & VF_STORAGE_FILE) {
+		long chunk_end_sectors = (long)(info->stor_off / 512) + head_len_sectors;
+		if (new_size_sectors < chunk_end_sectors) {
+			fprintf(stderr, "new size is too small: relocated chunk sits at a fixed "
+				"offset and needs at least %ld sectors\n", chunk_end_sectors);
+			return;
+		}
+		printf("volume uses a fixed storage-file offset, unaffected by partition size; "
+			"nothing to do\n");
+		return;
+	}
+
+	if (get_device_size(device, &live_size) != 0) {
+		fprintf(stderr, "could not determine current partition size\n");
+		return;
+	}
+	live_sectors = (long)(live_size / 512);
+
+	if (old_size_sectors > live_sectors) {
+		fprintf(stderr, "old size is larger than the current partition; "
+			"run this before shrinking the partition table\n");
+		return;
+	}
+	if (new_size_sectors > live_sectors) {
+		fprintf(stderr, "new size is larger than the current partition; "
+			"grow the partition table first, then run this\n");
+		return;
+	}
+
+	old_reloc = old_size_sectors - head_len_sectors;
+	new_reloc = new_size_sectors - head_len_sectors;
+
+	if (old_reloc == new_reloc) {
+		printf("relocation offset unchanged, nothing to do\n");
+		return;
+	}
+
+	if (rw_relocated_chunk(device, info->key_1, old_reloc, new_reloc, head_len_sectors) == 0) {
+		printf("relocated chunk moved to match new size\n");
+		if (new_size_sectors > old_size_sectors) {
+			printf("you can now mount, then grow the filesystem\n");
+		} else {
+			printf("you can now shrink the partition table to %ld sectors\n", new_size_sectors);
+		}
+	} else {
+		fprintf(stderr, "resize failed\n");
+	}
+}
+
 static void do_close(const char *mapper_name)
 {
 	char cmd[512];
@@ -517,17 +622,53 @@ static void do_mount(const char *device, const header_info_t *info,
 	}
 }
 
-int main(int argc, char **argv)
+static void print_usage(const char *prog)
 {
-	const char *device = NULL;
-	const char *mapper_name = NULL;
-	int offset_sectors = 4;
+	fprintf(stderr,
+		"usage: %s open <device> <name> [--offset-sectors N] [-v]\n"
+		"       %s close <name>\n"
+		"       %s resize <device> <old-size-sectors> <new-size-sectors> [--offset-sectors N] [-v]\n",
+		prog, prog, prog);
+}
+
+static int unlock_header(const char *device, header_info_t *info)
+{
 	char password[256];
 	unsigned char raw[HEADER_SIZE];
 	unsigned char dec[HEADER_SIZE];
-	header_info_t info;
-	int alg, i;
-	int npositional = 0;
+	int alg;
+
+	read_password(password, sizeof(password));
+
+	if (read_header(device, raw) != 0) {
+		return -1;
+	}
+
+	alg = try_unlock(raw, password, dec);
+	if (alg < 0) {
+		fprintf(stderr, "could not unlock header: wrong password or unrecognized header\n");
+		return -1;
+	}
+
+	printf("header unlocked, header cipher: %s\n", ALGO_NAME(alg));
+	parse_header(dec, info);
+	VLOG("version=%u alg_1=%s alg_2=%s\n", info->version,
+		ALGO_NAME(info->alg_1), info->alg_2 == -1 ? "none" : ALGO_NAME(info->alg_2));
+	VLOG("flags=0x%02x [%s%s%s%s]\n", info->flags,
+		(info->flags & VF_TMP_MODE) ? "TMP_MODE " : "",
+		(info->flags & VF_REENCRYPT) ? "REENCRYPT " : "",
+		(info->flags & VF_STORAGE_FILE) ? "STORAGE_FILE " : "",
+		(info->flags & VF_NO_REDIR) ? "NO_REDIR " : "");
+	VLOG("stor_off=%llu tmp_size=%llu\n",
+		(unsigned long long)info->stor_off, (unsigned long long)info->tmp_size);
+
+	return 0;
+}
+
+int main(int argc, char **argv)
+{
+	const char *cmd;
+	int i;
 
 	signal(SIGPIPE, SIG_IGN);
 
@@ -537,7 +678,13 @@ int main(int argc, char **argv)
 		}
 	}
 
-	if (argc >= 2 && strcmp(argv[1], "--close") == 0) {
+	if (argc < 2) {
+		print_usage(argv[0]);
+		return 1;
+	}
+	cmd = argv[1];
+
+	if (strcmp(cmd, "close") == 0) {
 		const char *name = NULL;
 		for (i = 2; i < argc; i++) {
 			if (strcmp(argv[i], "-v") != 0) {
@@ -546,58 +693,74 @@ int main(int argc, char **argv)
 			}
 		}
 		if (name == NULL) {
-			fprintf(stderr, "usage: %s --close <name>\n", argv[0]);
+			print_usage(argv[0]);
 			return 1;
 		}
 		do_close(name);
 		return 0;
 	}
 
-	for (i = 1; i < argc; i++) {
-		if (strcmp(argv[i], "--offset-sectors") == 0 && i + 1 < argc) {
-			offset_sectors = atoi(argv[++i]);
-		} else if (strcmp(argv[i], "-v") == 0) {
-			g_verbose = 1;
-		} else if (npositional == 0) {
-			device = argv[i];
-			npositional++;
-		} else if (npositional == 1) {
-			mapper_name = argv[i];
-			npositional++;
+	if (strcmp(cmd, "open") == 0) {
+		const char *device = NULL;
+		const char *mapper_name = NULL;
+		int offset_sectors = 4;
+		int npositional = 0;
+		header_info_t info;
+
+		for (i = 2; i < argc; i++) {
+			if (strcmp(argv[i], "--offset-sectors") == 0 && i + 1 < argc) {
+				offset_sectors = atoi(argv[++i]);
+			} else if (strcmp(argv[i], "-v") == 0) {
+				continue;
+			} else if (npositional == 0) {
+				device = argv[i];
+				npositional++;
+			} else if (npositional == 1) {
+				mapper_name = argv[i];
+				npositional++;
+			}
 		}
+		if (device == NULL || mapper_name == NULL) {
+			print_usage(argv[0]);
+			return 1;
+		}
+		if (unlock_header(device, &info) != 0) return 1;
+		do_mount(device, &info, mapper_name, offset_sectors);
+		return 0;
 	}
 
-	if (device == NULL || mapper_name == NULL) {
-		fprintf(stderr, "usage: %s <device> <name> [--offset-sectors N] [-v]\n"
-			"       %s --close <name>\n", argv[0], argv[0]);
-		return 1;
+	if (strcmp(cmd, "resize") == 0) {
+		const char *device = NULL;
+		long old_size_sectors = -1, new_size_sectors = -1;
+		int offset_sectors = 4;
+		int npositional = 0;
+		header_info_t info;
+
+		for (i = 2; i < argc; i++) {
+			if (strcmp(argv[i], "--offset-sectors") == 0 && i + 1 < argc) {
+				offset_sectors = atoi(argv[++i]);
+			} else if (strcmp(argv[i], "-v") == 0) {
+				continue;
+			} else if (npositional == 0) {
+				device = argv[i];
+				npositional++;
+			} else if (npositional == 1) {
+				old_size_sectors = atol(argv[i]);
+				npositional++;
+			} else if (npositional == 2) {
+				new_size_sectors = atol(argv[i]);
+				npositional++;
+			}
+		}
+		if (device == NULL || old_size_sectors < 0 || new_size_sectors < 0) {
+			print_usage(argv[0]);
+			return 1;
+		}
+		if (unlock_header(device, &info) != 0) return 1;
+		do_resize(device, &info, old_size_sectors, new_size_sectors, offset_sectors);
+		return 0;
 	}
 
-	read_password(password, sizeof(password));
-
-	if (read_header(device, raw) != 0) {
-		return 1;
-	}
-
-	alg = try_unlock(raw, password, dec);
-	if (alg < 0) {
-		fprintf(stderr, "could not unlock header: wrong password or unrecognized header\n");
-		return 1;
-	}
-
-	printf("header unlocked, header cipher: %s\n", ALGO_NAME(alg));
-	parse_header(dec, &info);
-	VLOG("version=%u alg_1=%s alg_2=%s\n", info.version,
-		ALGO_NAME(info.alg_1), info.alg_2 == -1 ? "none" : ALGO_NAME(info.alg_2));
-	VLOG("flags=0x%02x [%s%s%s%s]\n", info.flags,
-		(info.flags & VF_TMP_MODE) ? "TMP_MODE " : "",
-		(info.flags & VF_REENCRYPT) ? "REENCRYPT " : "",
-		(info.flags & VF_STORAGE_FILE) ? "STORAGE_FILE " : "",
-		(info.flags & VF_NO_REDIR) ? "NO_REDIR " : "");
-	VLOG("stor_off=%llu tmp_size=%llu\n",
-		(unsigned long long)info.stor_off, (unsigned long long)info.tmp_size);
-
-	do_mount(device, &info, mapper_name, offset_sectors);
-
-	return 0;
+	print_usage(argv[0]);
+	return 1;
 }
