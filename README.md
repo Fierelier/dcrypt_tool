@@ -46,6 +46,8 @@ dcrypt_tool resize <device> <old-size-sectors> <new-size-sectors> [--offset-sect
 
 **Growing:**
 
+WARNING: This procedure seems to work (filesystem is mountable afterwards), but it seems to make the disk unbootable (NTLDR causes a triple fault). More research required.
+
 ```
 DISK=/dev/sdX
 PART=0
@@ -55,7 +57,7 @@ growpart $DISK $PART
 NEWSIZE=$(blockdev --getsz ${DISK}${PART})
 dcrypt_tool resize ${DISK}${PART} $OLDSIZE $NEWSIZE
 dcrypt_tool open ${DISK}${PART} $MNAME
-ntfsfix /dev/mapper/$MNAME
+#ntfsfix /dev/mapper/$MNAME # optional??
 ntfsresize --force --size $(blockdev --getsize64 /dev/mapper/$MNAME)
 dcrypt_tool close $MNAME
 ```
