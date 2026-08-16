@@ -1,9 +1,6 @@
-Tool for opening Disk Cryptor (DiskCryptor) 1.1.846.118 partitions or
-disks in Linux. Only supports plain password approach.
+Tool for opening Disk Cryptor (DiskCryptor) 1.1.846.118 partitions or disks in Linux. Only supports plain password approach.
 
-NOTE: main.c is full AI slop. Other components may have been edited by
-AI. Mainly tested with encrypted partitions, not fully encrypted disks.
-Proceed with caution.
+NOTE: main.c is full AI slop. Other components may have been edited by AI. Mainly tested with encrypted partitions, not fully encrypted disks. Proceed with caution.
 
 CERTIFIED: ⭐ Works on my machine :)
 
@@ -17,8 +14,7 @@ dcrypt_tool close <name>
 dcrypt_tool resize <device> <old-size-sectors> <new-size-sectors> [--offset-sectors N] [-v]
 ```
 
-If you put your password into the `DC_PASSWORD` environment variable, you
-won't be prompted for it.
+If you put your password into the `DC_PASSWORD` environment variable, you won't be prompted for it.
 
 ### open
 
@@ -26,8 +22,7 @@ won't be prompted for it.
 dcrypt_tool open <device> <name> [--offset-sectors N] [-v]
 ```
 
-Opens the disk/partition as `/dev/mapper/<name>`. You can now use the
-usual tools, like `mount` (for partitions) or `losetup` (for disks).
+Opens the disk/partition as `/dev/mapper/<name>`. You can now use the usual tools, like `mount` (for partitions) or `losetup` (for disks).
 
 ### close
 
@@ -35,8 +30,7 @@ usual tools, like `mount` (for partitions) or `losetup` (for disks).
 dcrypt_tool close <name>
 ```
 
-Closes the disk/partition at `/dev/mapper/<name>`. You may need to unmount
-or detach your child device beforehand.
+Closes the disk/partition at `/dev/mapper/<name>`. You may need to unmount or detach child devices beforehand.
 
 ### resize
 
